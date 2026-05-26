@@ -15,7 +15,7 @@ from langchain_core.messages import HumanMessage, AIMessage  # 人类和AI消息
 from langchain_core.output_parsers import StrOutputParser    # 字符串输出解析器，提取模型返回的纯文本
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # 提示模板和对话历史占位符
 from langchain_chroma import Chroma                           # Chroma 向量数据库客户端
-from langchain_openai import ChatOpenAI                       # OpenAI 兼容的聊天模型接口，此处对接智谱AI
+from langchain_openai import ChatOpenAI                       # OpenAI 兼容的聊天模型接口，此处对接DeepSeek
 from langchain_core.documents import Document                 # 文档对象，表示文本块及其元数据
 from langchain_text_splitters import RecursiveCharacterTextSplitter  # 递归文本分割器，用于文档切片
 from langgraph.constants import START, END                    # LangGraph 图中的特殊节点：开始和结束
@@ -25,14 +25,16 @@ from langgraph.graph import StateGraph                        # LangGraph 状态
 # ===================第二部分：加载和验证环境变量===================
 dotenv.load_dotenv()                        # 从项目根目录的 .env 文件加载环境变量
 
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")     # 读取DeepSeek的API密钥
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL")   # 读取DeepSeek的API基础URL
 ZHIPUAI_API_KEY = os.getenv("ZHIPUAI_API_KEY")     # 读取智谱AI的API密钥
-ZHIPUAI_BASE_URL = os.getenv("ZHIPUAI_BASE_URL")   # 读取智谱AI的API基础URL
+ZHIPUAI_BASE_URL = os.getenv("ZHIPUAI_BASE_URL")
 
 # 验证必要的环境变量是否存在，缺失则抛出错误并终止程序
-if not ZHIPUAI_API_KEY:
-    raise ValueError("环境变量 ZHIPUAI_API_KEY 未设置，请在 .env 文件中添加该变量。")
-if not ZHIPUAI_BASE_URL:
-    raise ValueError("环境变量 ZHIPUAI_BASE_URL 未设置，请在 .env 文件中添加该变量。")
+if not DEEPSEEK_API_KEY:
+    raise ValueError("环境变量 DEEPSEEK_API_KEY 未设置，请在 .env 文件中添加该变量。")
+if not DEEPSEEK_BASE_URL:
+    raise ValueError("环境变量 DEEPSEEK_BASE_URL 未设置，请在 .env 文件中添加该变量。")
 
 # 配置日志：级别为INFO，格式包含时间、模块名、日志级别和消息
 logging.basicConfig(
@@ -49,7 +51,7 @@ _EMBEDDINGS_CACHE = None
 # ===================第三部分：工具函数===================
 def get_model():
     """
-    获取聊天模型的单例实例（智谱AI glm-4-flash）。
+    获取聊天模型的单例实例（DeepSeek Chat）。
     使用全局缓存，避免重复创建，节省资源。
     """
     global _MODEL_CACHE
@@ -57,11 +59,11 @@ def get_model():
         return _MODEL_CACHE   # 缓存存在则直接返回
     # 创建 ChatOpenAI 实例，配置模型名、温度、最大token、API密钥和基础URL
     _MODEL_CACHE = ChatOpenAI(
-        model="glm-4-flash",
-        temperature=0.3,        # 较低温度使生成更稳定、确定
-        max_tokens=1000,        # 限制单次生成的最大token数
-        api_key=ZHIPUAI_API_KEY,
-        base_url=ZHIPUAI_BASE_URL
+        model="deepseek-chat",   # 使用的模型名称
+        temperature=0.3,         # 较低温度使生成更稳定、确定
+        max_tokens=1000,         # 限制单次生成的最大token数
+        api_key=DEEPSEEK_API_KEY,     # 使用从环境变量读取的API密钥
+        base_url=DEEPSEEK_BASE_URL    # API基础URL
     )
     return _MODEL_CACHE
 
@@ -421,18 +423,6 @@ class Retriever:
         logger.info(f"阈值检索: 找到{len(all_results)}个文档，{len(filtered_docs)}个达到阈值{threshold}")
         return filtered_docs[:self.config.top_k]
 
-    def get_collection_info(self) -> Dict:
-        """返回当前集合的基本信息，如名称和文档数量。"""
-        try:
-            collection_data = self.vector_store.get()
-            return {
-                "name": self.collection_name,
-                "count": len(collection_data['ids']),
-                "metadata": {}
-            }
-        except Exception as e:
-            logger.error(f"获取集合信息失败：{e}")
-            return {"name": self.collection_name, "count": 0, "metadata": {}}
 
 # %%
 # ===================第九部分：生成器===================
@@ -851,74 +841,74 @@ RAG 的优势：
 # ==================== 第十三部分：主程序 ====================
 def main():
     """主程序：演示 RAG 系统的使用流程，包括索引、单轮问答、多轮对话和清除历史。"""
-    print("=" * 60)
-    print("RAG 检索增强生成系统演示")
-    print("=" * 60)
+    print("=" * 60)                     # 打印分隔线，美化输出
+    print("RAG 检索增强生成系统演示")   # 显示演示标题
+    print("=" * 60)                     # 打印分隔线
 
     # 初始化 RAG 系统（自定义配置）
-    print("\n初始化 RAG 系统...")
+    print("\n初始化 RAG 系统...")        # 提示用户正在初始化系统
     config = RAGConfig(
-        chunk_size=300,
-        chunk_overlap=50,
-        top_k=3,
-        deduplicate=False     # 演示时可关闭去重以加快速度
+        chunk_size=300,                # 设置分块大小为300字符
+        chunk_overlap=50,              # 分块重叠50字符
+        top_k=3,                       # 检索前3个最相关文档
+        deduplicate=False              # 演示时可关闭去重以加快速度
     )
-    rag = RAGChain(config)   # 默认使用内存向量存储
+    rag = RAGChain(config)             # 创建RAG链实例，默认使用内存向量存储
 
     # 索引示例文档
-    print("\n索引示例文档...")
-    texts = [doc.get("text", "") for doc in SAMPLE_DOCUMENTS]
-    metadatas = [doc.get("metadata", {}) for doc in SAMPLE_DOCUMENTS]
-    rag.index_documents(texts, metadatas)
+    print("\n索引示例文档...")          # 提示用户正在索引文档
+    texts = [doc.get("text", "") for doc in SAMPLE_DOCUMENTS]      # 提取所有示例文本
+    metadatas = [doc.get("metadata", {}) for doc in SAMPLE_DOCUMENTS]  # 提取对应的元数据
+    rag.index_documents(texts, metadatas)  # 调用索引方法，处理文档并构建向量存储
 
     # 单轮问答演示
-    print("\n" + "=" * 60)
-    print("示例 1：单轮问答")
+    print("\n" + "=" * 60)             # 打印分隔线
+    print("示例 1：单轮问答")           # 显示演示标题
     questions = [
-        "什么是 LangChain？它有什么特点？",
-        "RAG 系统的工作流程是怎样的？",
-        "有哪些常见的向量数据库？"
+        "什么是 LangChain？它有什么特点？",   # 第一个问题
+        "RAG 系统的工作流程是怎样的？",       # 第二个问题
+        "有哪些常见的向量数据库？"            # 第三个问题
     ]
-    for q in questions:
-        result = rag.query(q)
-        print(f"\n回答：\n{result['answer']}")
-        print("\n来源：")
-        for src in result['sources']:
-            print(f"   - [{src['index']}] {src['source']}")
-        print(f"\n置信度：{result['confidence']:.2f}")
-        print("-" * 60)
+    for q in questions:                         # 遍历每个问题
+        result = rag.query(q)                   # 调用查询方法，获取回答
+        print(f"\n回答：\n{result['answer']}")  # 打印回答
+        print("\n来源：")                       # 打印来源标题
+        for src in result['sources']:           # 遍历来源列表
+            print(f"   - [{src['index']}] {src['source']}")  # 打印每个来源的索引和来源
+        print(f"\n置信度：{result['confidence']:.2f}")       # 打印置信度，保留两位小数
+        print("-" * 60)                         # 打印分隔线
 
     # 多轮对话演示（验证历史维护和指代消解）
-    print("\n" + "=" * 60)
-    print("示例 2：多轮对话（自动维护历史）")
-    q1 = "LangGraph 是什么？"
-    print(f"\n用户：{q1}")
-    result1 = rag.query(q1)
-    print(f"\n助手：{result1['answer']}")
-    q2 = "它的核心概念有哪些？"
-    print(f"\n用户：{q2}")
-    result2 = rag.query(q2)
-    print(f"\n助手：{result2['answer']}")
-    q3 = "在什么场景下使用它比较合适？"
-    print(f"\n用户：{q3}")
-    result3 = rag.query(q3)
-    print(f"\n助手：{result3['answer']}")
+    print("\n" + "=" * 60)             # 打印分隔线
+    print("示例 2：多轮对话（自动维护历史）")  # 显示演示标题
+    q1 = "LangGraph 是什么？"          # 第一个多轮问题
+    print(f"\n用户：{q1}")             # 打印用户输入
+    result1 = rag.query(q1)            # 执行查询
+    print(f"\n助手：{result1['answer']}")  # 打印回答
+    q2 = "它的核心概念有哪些？"        # 第二个问题，包含指代“它”
+    print(f"\n用户：{q2}")             # 打印用户输入
+    result2 = rag.query(q2)            # 执行查询（系统会根据历史改写）
+    print(f"\n助手：{result2['answer']}")  # 打印回答
+    q3 = "在什么场景下使用它比较合适？"  # 第三个问题，继续指代
+    print(f"\n用户：{q3}")             # 打印用户输入
+    result3 = rag.query(q3)            # 执行查询
+    print(f"\n助手：{result3['answer']}")  # 打印回答
 
     # 清除历史后开始新对话
-    print("\n" + "=" * 60)
-    print("示例 3：清除历史后的新对话")
-    rag.clear_history()
-    q4 = "RAG 是什么？"
-    print(f"\n用户：{q4}")
-    result4 = rag.query(q4)
-    print(f"\n助手：{result4['answer']}")
-    q5 = "它的工作流程是怎样的？"
-    print(f"\n用户：{q5}")
-    result5 = rag.query(q5)
-    print(f"\n助手：{result5['answer']}")
+    print("\n" + "=" * 60)             # 打印分隔线
+    print("示例 3：清除历史后的新对话")  # 显示演示标题
+    rag.clear_history()                # 清除对话历史，重置上下文
+    q4 = "RAG 是什么？"                # 新对话的第一个问题
+    print(f"\n用户：{q4}")             # 打印用户输入
+    result4 = rag.query(q4)            # 执行查询
+    print(f"\n助手：{result4['answer']}")  # 打印回答
+    q5 = "它的工作流程是怎样的？"       # 新对话的第二个问题，此时“它”不再有上文指代，可能需要系统自行判断
+    print(f"\n用户：{q5}")             # 打印用户输入
+    result5 = rag.query(q5)            # 执行查询
+    print(f"\n助手：{result5['answer']}")  # 打印回答
 
-    print("\n" + "=" * 60)
-    print("RAG 系统演示完成！")
+    print("\n" + "=" * 60)             # 打印分隔线
+    print("RAG 系统演示完成！")         # 提示演示结束
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":             # 判断是否作为主程序运行
+    main()                             # 调用主函数，启动演示
