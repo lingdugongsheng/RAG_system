@@ -1,4 +1,4 @@
-```markdown
+
 # 🔍 RAG 检索增强生成系统
 
 基于 **LangChain + LangGraph + Chroma + DeepSeek** 构建的检索增强生成系统，具备完整的文档处理流水线、语义去重、查询改写、多轮对话管理和置信度评估能力。
